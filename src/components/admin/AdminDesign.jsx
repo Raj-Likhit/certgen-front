@@ -1,0 +1,678 @@
+import { useState, useRef, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { 
+    IconUpload as Upload, 
+    IconSave as Save, 
+    IconPointer as MousePointer2, 
+    IconLock as Lock, 
+    IconSheet as FileSpreadsheet, 
+    IconUsers as Users, 
+    IconLayout as LayoutTemplate, 
+    IconAlert as AlertCircle, 
+    IconTrash as Trash2 
+} from '../common/Icons'
+import api, { BACKEND_URL } from '../../services/api'
+import DesignEditor from './DesignEditor'
+import { Toaster, toast } from 'sonner'
+
+export default function AdminDesign() {
+    // Auth State
+    const [auth, setAuth] = useState(false)
+    const [password, setPassword] = useState('')
+    const [loginError, setLoginError] = useState('')
+
+    // Tabs: 'design' | 'participants' | 'analytics'
+    const [activeTab, setActiveTab] = useState('design')
+
+    // Design State (Hoisted to share w/ Editor)
+    const [templateUrl, setTemplateUrl] = useState(null)
+    const [namePos, setNamePos] = useState({ x: 500, y: 400 })
+    const [fontFamily, setFontFamily] = useState('Helvetica')
+    const [textColor, setTextColor] = useState('#000000')
+    const [eventName, setEventName] = useState('Certificate of Participation')
+    const [availableFonts, setAvailableFonts] = useState(['Helvetica', 'Times-Roman', 'Courier'])
+    const [isCentered, setIsCentered] = useState(false)
+    const [fontWeight, setFontWeight] = useState('Regular')
+    const [isItalic, setIsItalic] = useState(false)
+    const [strokeWidth, setStrokeWidth] = useState(0)
+    const [strokeColor, setStrokeColor] = useState('#000000')
+    const [fontSize, setFontSize] = useState(48)
+    const [fontUrl, setFontUrl] = useState('')
+    const [fontFilename, setFontFilename] = useState('')
+    const [uploadedFont, setUploadedFont] = useState({
+        face: null,
+        objectUrl: null,
+        fileName: '',
+        loaded: false
+    });
+
+    const loadUploadedFont = async (file) => {
+        // Cleanup First
+        if (uploadedFont.objectUrl) {
+            URL.revokeObjectURL(uploadedFont.objectUrl);
+        }
+        if (uploadedFont.face) {
+            document.fonts.delete(uploadedFont.face);
+        }
+
+        const objectUrl = URL.createObjectURL(file);
+        const fontFamilyName = "CustomCertificateFont";
+
+        try {
+            const face = new FontFace(fontFamilyName, `url(${objectUrl})`);
+            
+            // Timeout Protection (5s)
+            const timeout = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error("Font load timeout")), 5000);
+            });
+
+            await Promise.race([face.load(), timeout]);
+            document.fonts.add(face);
+
+            // Force Layout Reflow
+            await document.fonts.load(`16px ${fontFamilyName}`);
+            await document.fonts.ready;
+
+            setUploadedFont({
+                face,
+                objectUrl,
+                fileName: file.name,
+                loaded: true
+            });
+            
+            setFontFamily(fontFamilyName);
+            return fontFamilyName;
+        } catch (err) {
+            console.error("Font loading failure:", err);
+            URL.revokeObjectURL(objectUrl);
+            throw err;
+        }
+    };
+
+    // CSV/Participants State
+    const [csvFile, setCsvFile] = useState(null)
+    const [parsedData, setParsedData] = useState([])
+    const [dbParticipants, setDbParticipants] = useState([])
+    const [isSyncing, setIsSyncing] = useState(false)
+    const [isLoadingDb, setIsLoadingDb] = useState(false)
+
+    useEffect(() => {
+        // Initial token check (optional)
+        const token = localStorage.getItem('adminToken');
+        if (token) setAuth(true);
+
+        api.get('/admin/config')
+            .then(res => {
+                const cfg = res.data.config; // Access config object
+                if (cfg) {
+                    const x = cfg.name_pos?.x !== undefined ? cfg.name_pos.x : 500;
+                    const y = cfg.name_pos?.y !== undefined ? cfg.name_pos.y : 400;
+                    setNamePos({ x, y });
+                    setFontFamily(cfg.font_family || 'Helvetica');
+                    setTextColor(cfg.text_color || '#000000');
+                    setEventName(cfg.event_name || 'Certificate of Participation');
+                    setIsCentered(cfg.is_centered || false);
+                    setFontWeight(cfg.font_weight || 'Regular');
+                    setIsItalic(cfg.is_italic || false);
+                    setStrokeWidth(cfg.stroke_width || 0);
+                    setStrokeColor(cfg.stroke_color || '#000000');
+                    // Safety: default to 48 if stored as 0
+                    setFontSize(cfg.font_size || 48);
+                    setFontUrl(cfg.font_url || '');
+                    setFontFilename(cfg.font_filename || '');
+                }
+            })
+            .catch(err => console.log("Config load error", err));
+
+        api.get('/admin/fonts')
+            .then(res => {
+                if (res.data.fonts) setAvailableFonts(res.data.fonts);
+            })
+            .catch(err => console.log("Font fetch error", err));
+
+        const checkTemplate = async () => {
+            try {
+                const url = `${BACKEND_URL}/assets/template.png?t=${Date.now()}`;
+                setTemplateUrl(url);
+            } catch (e) { console.log("No template found"); }
+        }
+        checkTemplate();
+        fetchParticipants();
+    }, []);
+
+    // Dynamic Font Injection
+    useEffect(() => {
+        const styleId = 'dynamic-fonts-css';
+        let styleTag = document.getElementById(styleId);
+        if (!styleTag) {
+            styleTag = document.createElement('style');
+            styleTag.id = styleId;
+            document.head.appendChild(styleTag);
+        }
+
+        const fontRules = (Array.isArray(availableFonts) ? availableFonts : [])
+            .filter(f => typeof f !== 'string' && f && f.type === 'custom')
+            .map(f => `
+                @font-face {
+                    font-family: '${f.name}';
+                    src: url('${BACKEND_URL}/assets/fonts/${f.filename}') format('truetype');
+                    font-weight: normal;
+                    font-style: normal;
+                }
+            `)
+            .join('\n');
+
+        styleTag.innerHTML = fontRules;
+
+        return () => {
+            // Optional: clean up on unmount or just let it persist
+        };
+    }, [availableFonts]);
+
+    const fetchParticipants = async () => {
+        setIsLoadingDb(true);
+        try {
+            const res = await api.get('/admin/teams')
+            setDbParticipants(res.data || [])
+        } catch (err) {
+            console.error("DB Fetch Error:", err);
+            if (err.status === 401) setAuth(false);
+        } finally {
+            setIsLoadingDb(false);
+        }
+    };
+
+    // ... (Login Handler same) ...
+    const handleLogin = async (e) => {
+        e.preventDefault()
+        setLoginError('')
+        try {
+            const res = await api.post('/admin/login', { password });
+            localStorage.setItem('adminToken', res.data.token);
+            setAuth(true);
+            setPassword('');
+            toast.success("Login Successful");
+        } catch (err) {
+            setPassword('');
+            setLoginError(err.message || 'Invalid password');
+            toast.error("Invalid password.");
+        }
+    }
+
+    // Cleanup FontFace and ObjectURLs on unmount
+    useEffect(() => {
+        return () => {
+            if (uploadedFont.objectUrl) URL.revokeObjectURL(uploadedFont.objectUrl);
+            if (uploadedFont.face) document.fonts.delete(uploadedFont.face);
+        };
+    }, [uploadedFont]);
+
+    const handleFontUpload = async (file) => {
+        const loadingToast = toast.loading(`Ingesting ${file.name}...`);
+        try {
+            // Immediate high-fidelity preview
+            await loadUploadedFont(file);
+
+            // Backend Sync
+            const formData = new FormData();
+            formData.append('file', file);
+            await api.post('/admin/upload-font', formData);
+            
+            setFontFilename(file.name);
+            toast.success("Font Active and Synced", { id: loadingToast });
+            
+            const res = await api.get('/admin/fonts');
+            if (res.data.fonts) setAvailableFonts(res.data.fonts);
+        } catch (e) {
+            toast.error(e.message || "Font Pipeline Failure", { id: loadingToast });
+        }
+    };
+    
+    const handleImportGoogleFont = async (url) => {
+        const loadingToast = toast.get?.loading ? toast.loading("Importing font from Google...") : null;
+        try {
+            const res = await api.post('/admin/font-import-google', { url });
+            setFontUrl(url);
+            setFontFilename(''); // Clear filename if URL imported
+            
+            // Set first imported font as active if available
+            if (res.data.imported?.length > 0) {
+                setFontFamily(res.data.imported[0].name);
+            }
+            
+            if (loadingToast) toast.success("Font imported successfully!", { id: loadingToast });
+            else toast.success("Font imported successfully!");
+            // Refresh list
+            const fontsRes = await api.get('/admin/fonts');
+            if (fontsRes.data.fonts) setAvailableFonts(fontsRes.data.fonts);
+        } catch (e) {
+            const msg = e.response?.data?.detail || e.message || "Import Failed";
+            if (loadingToast) toast.error(msg, { id: loadingToast });
+            else toast.error(msg);
+        }
+    }
+
+    // ... (Upload/AutoDetect same) ...
+    const handleUpload = async (e) => {
+        const file = e.target.files[0]
+        if (!file) return
+        setTemplateUrl(URL.createObjectURL(file))
+
+        const formData = new FormData()
+        formData.append('file', file)
+        try {
+            await api.post('/admin/upload-template', formData)
+            setTimeout(async () => {
+                setTemplateUrl(`${BACKEND_URL}/assets/template.png?t=${Date.now()}`)
+                toast.success("Template Uploaded Successfully")
+                // Auto-detect after upload
+                await handleAutoDetect();
+            }, 1000)
+        } catch (err) {
+            console.error(err);
+            toast.error(err.message || "Upload Failed")
+        }
+    }
+
+    const handleAutoDetect = async () => {
+        const loadingToast = toast.loading("Analyzing template for name positioning...")
+        try {
+            const res = await api.post('/admin/auto-detect')
+            if (res.data.found) {
+                setNamePos({ x: res.data.x, y: res.data.y })
+                setIsCentered(true) // Default to centering for smart detection
+                toast.success("Smart Alignment Successful", { id: loadingToast })
+            } else {
+                toast.warning(res.data.message || "No line detected.", { id: loadingToast })
+            }
+        } catch (err) {
+            toast.error(err.message || "Auto-detect failed.", { id: loadingToast })
+        }
+    }
+
+    const handleSaveConfig = async () => {
+        try {
+            let savedFontFamily = fontFamily;
+            if (fontFamily === "CustomCertificateFont" && fontFilename) {
+                savedFontFamily = fontFilename.split('.')[0];
+            }
+
+            // New Config Payload
+            const payload = {
+                name_x: Math.round(namePos.x),
+                name_y: Math.round(namePos.y),
+                font_family: savedFontFamily,
+                text_color: textColor,
+                event_name: eventName,
+                is_centered: isCentered,
+                font_weight: fontWeight,
+                is_italic: isItalic,
+                stroke_width: strokeWidth,
+                stroke_color: strokeColor,
+                font_size: fontSize || 48, // Never save 0
+                font_url: fontUrl,
+                font_filename: fontFilename
+            }
+            await api.post('/admin/save-config', payload)
+            toast.success("Configuration Saved!")
+        } catch (err) {
+            console.error("Save Error:", err)
+            const errorMsg = err.response?.data?.detail 
+                ? (typeof err.response.data.detail === 'string' ? err.response.data.detail : JSON.stringify(err.response.data.detail))
+                : (err.message || "Save failed")
+            toast.error(errorMsg)
+            if (err.response?.status === 401) setAuth(false)
+        }
+    }
+
+    const handleDeleteTemplate = async () => {
+        if (!confirm("Are you sure?")) return
+        try {
+            await api.delete('/admin/template')
+            setTemplateUrl(null)
+            toast.success("Template Removed")
+        } catch (err) {
+            toast.error(err.message || "Delete Failed")
+        }
+    }
+
+    const handleDeleteFont = async () => {
+        if (!fontFilename || !confirm("Delete this font?")) return;
+        try {
+            await api.delete(`/admin/fonts/${fontFilename}`);
+            setFontFilename(null);
+            setFontUrl(null);
+            setFontFamily('Helvetica');
+            toast.success("Font Removed");
+        } catch (err) {
+            toast.error(err.message || "Failed to remove font");
+        }
+    }
+
+    const handleCsvUpload = (e) => {
+        const file = e.target.files[0]
+        if (!file) return
+        setCsvFile(file)
+        
+        // We will use Papa.parse to parse the multi-column dataset
+        import('papaparse').then(Papa => {
+            Papa.default.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: (results) => {
+                    const data = results.data.map(row => {
+                        return {
+                            team_lead_name: row['Team Lead Name']?.trim() || row['Team Lead Name ']?.trim() || '',
+                            team_member_1_name: row['Team Member 1 Name']?.trim() || '',
+                            team_member_2_name: row['Team Member 2 Name']?.trim() || '',
+                            team_member_3_name: row['Team Member 3 Name']?.trim() || '',
+                            team_member_4_name: row['Team Member 4 Name']?.trim() || '',
+                            team_member_5_name: row['Team Member 5 Name']?.trim() || '',
+                        }
+                    }).filter(t => t.team_lead_name || t.team_member_1_name) // Keep valid rows
+
+                    setParsedData(data)
+                    toast.info(`Parsed ${data.length} team rows`)
+                },
+                error: (error) => {
+                    toast.error(`CSV Parsing failed: ${error.message}`)
+                }
+            })
+        }).catch(err => {
+            console.error("Failed to load papaparse", err)
+            toast.error("Failed to load CSV parser")
+        })
+    }
+
+    const handleSync = async () => {
+        if (!parsedData.length) return
+        setIsSyncing(true)
+        try {
+            const payload = { teams: parsedData }
+            const res = await api.post('/admin/batch-import', payload)
+
+            // Check for row-level errors
+            const errors = res.data.details ? res.data.details.filter(d => d.status === 'error') : [];
+
+            if (errors.length > 0) {
+                console.error("Sync partial failures:", errors);
+                const firstError = errors[0].error || "Unknown Error";
+                toast.error(`Sync Incomplete: ${errors.length} failed. Reason: ${firstError}`);
+            } else {
+                toast.success(res.data.summary || `Imported ${parsedData.length} records`);
+                setCsvFile(null);
+                setParsedData([]);
+                fetchParticipants(); // Refresh live view
+            }
+        } catch (err) {
+            console.error(err)
+            toast.error(err.message || "Sync Failed");
+            if (err.status === 401) setAuth(false);
+        } finally {
+            setIsSyncing(false)
+        }
+    }
+
+    if (!auth) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[70vh] space-y-8 bg-grid">
+                <div className="p-12 rounded-3xl bg-surface/40 backdrop-blur-2xl border border-white/5 shadow-2xl max-w-md w-full">
+                    <div className="flex flex-col items-center mb-10">
+                        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-accent to-accent/20 flex items-center justify-center mb-6 shadow-lg shadow-accent/20 transform -rotate-3 hover:rotate-0 transition-transform duration-500">
+                            <Lock className="w-10 h-10 text-white" />
+                        </div>
+                        <h2 className="text-3xl font-bold tracking-tight text-white">Admin Login</h2>
+                        <p className="text-sm font-medium text-primary-dim mt-2 text-center">Please login to manage certificates.</p>
+                    </div>
+                    
+                    <form onSubmit={handleLogin} className="space-y-6">
+                        <div className="space-y-3">
+                            <label className="text-xs font-semibold text-primary-dim uppercase tracking-widest ml-1">Password</label>
+                            <input
+                                id="admin-password"
+                                type="password"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                className="w-full h-14 rounded-xl bg-white/5 border border-white/5 px-6 text-white text-lg placeholder:text-white/10 font-mono focus:border-accent/50 outline-none transition-all"
+                                placeholder="••••••••••••••••"
+                                autoComplete="current-password"
+                            />
+                        </div>
+                        <button type="submit" className="w-full h-14 rounded-xl bg-white text-black hover:bg-white/90 font-bold tracking-tight shadow-xl shadow-white/10 transition-all flex items-center justify-center">
+                            Login
+                        </button>
+                        {loginError && <p className="text-error text-xs text-center font-bold tracking-tight mt-4">{loginError}</p>}
+                    </form>
+                </div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="pb-20 h-screen flex flex-col box-border bg-bg text-primary font-sans">
+
+            {/* Tab Navigation */}
+            <div className="flex gap-2 md:gap-4 mb-0 border-b border-white/5 shrink-0 px-4 md:px-8 pt-6 md:pt-8 bg-surface/30 backdrop-blur-3xl overflow-x-auto no-scrollbar">
+                <button onClick={() => setActiveTab('design')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'design' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <LayoutTemplate className="w-3.5 h-3.5 md:w-4 md:h-4" /> Design Editor
+                </button>
+                <button onClick={() => setActiveTab('participants')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'participants' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <Users className="w-3.5 h-3.5 md:w-4 md:h-4" /> Participants
+                </button>
+                <button onClick={() => setActiveTab('analytics')} className={`flex items-center gap-2 md:gap-3 px-4 md:px-8 py-4 md:py-5 transition-all font-bold text-[10px] md:text-xs tracking-tight border-b-2 whitespace-nowrap ${activeTab === 'analytics' ? 'text-white border-white bg-white/5 shadow-[0_15px_30px_-15px_rgba(255,255,255,0.2)]' : 'text-primary-dim border-transparent hover:text-white'}`}>
+                    <AlertCircle className="w-3.5 h-3.5 md:w-4 md:h-4" /> Analytics
+                </button>
+            </div>
+
+            {/* TAB: DESIGN */}
+            {activeTab === 'design' && (
+                <div className="flex-1 min-h-0 bg-background">
+                    <DesignEditor
+                        templateUrl={templateUrl}
+                        onUpload={handleUpload}
+                        onDelete={handleDeleteTemplate}
+                        namePos={namePos} setNamePos={setNamePos}
+                        onSave={handleSaveConfig}
+                        onAutoDetect={handleAutoDetect}
+                        fontFamily={fontFamily} setFontFamily={setFontFamily}
+                        textColor={textColor} setTextColor={setTextColor}
+                        eventName={eventName} setEventName={setEventName}
+                        availableFonts={availableFonts}
+                        onFontUpload={handleFontUpload}
+                        onFontDelete={handleDeleteFont}
+                        onGoogleFontImport={handleImportGoogleFont}
+                        isCentered={isCentered}  
+                        setIsCentered={(val) => {
+                            // Coordinate transformation for centering: x maps to the middle
+                            // If switching to centered, x becomes the center point
+                            // No ref needed, we use the value directly
+                            setIsCentered(val);
+                        }}
+                        fontWeight={fontWeight} setFontWeight={setFontWeight}
+                        isItalic={isItalic} setIsItalic={setIsItalic}
+                        strokeWidth={strokeWidth} setStrokeWidth={setStrokeWidth}
+                        strokeColor={strokeColor} setStrokeColor={setStrokeColor}
+                        fontSize={fontSize} setFontSize={setFontSize}
+                        fontUrl={fontUrl} fontFilename={fontFilename}
+                    />
+                </div>
+            )}
+
+            {/* TAB: PARTICIPANTS */}
+            {activeTab === 'participants' && (
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-0 min-h-0 h-full bg-bg">
+                    {/* Left panel */}
+                    <div className="lg:col-span-1 border-r border-white/5 p-8 space-y-10 bg-surface/20 backdrop-blur-3xl overflow-y-auto custom-scrollbar">
+                        <div className="space-y-3">
+                             <h3 className="font-bold text-[10px] uppercase tracking-[0.25em] text-primary-dim flex items-center gap-2">
+                                 <FileSpreadsheet className="w-3 h-3 text-accent" /> Import Data
+                             </h3>
+                             <p className="text-sm font-medium text-white/40 leading-relaxed">Map and sync participant records from CSV files.</p>
+                        </div>
+
+                        <div className="space-y-8">
+                            <div className="space-y-4">
+                                <label className="block text-[10px] font-bold text-primary-dim uppercase tracking-widest ml-1">Source File (.csv)</label>
+                                <div className="relative group/input">
+                                    <input type="file" onChange={handleCsvUpload} accept=".csv" className="w-full h-14 rounded-xl bg-white/5 border border-white/5 px-6 text-transparent text-sm file:hidden cursor-pointer flex items-center transition-all hover:bg-white/10" />
+                                    <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 pointer-events-none flex items-center justify-between">
+                                        <span className="text-[11px] font-mono text-white/20 group-hover/input:text-white/40 truncate pr-8">
+                                            {csvFile ? csvFile.name : "Select Document..."}
+                                        </span>
+                                        <Upload className="w-4 h-4 text-white/20 group-hover/input:text-white/40" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <AnimatePresence>
+                                {csvFile && (
+                                    <motion.div 
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className="p-6 rounded-2xl bg-accent/5 border border-accent/20 flex flex-col gap-2"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
+                                            <p className="text-accent text-xs font-bold uppercase tracking-widest leading-none text-glow">Status: Ready</p>
+                                        </div>
+                                        <p className="text-white/40 text-[10px] font-mono mt-1">{parsedData.length.toLocaleString()} Valid Records Identified</p>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            <button
+                                onClick={handleSync}
+                                disabled={!parsedData.length || isSyncing}
+                                className="w-full h-14 rounded-xl bg-white text-black hover:bg-white/90 disabled:opacity-20 transition-all font-bold tracking-tight shadow-xl shadow-white/5 flex items-center justify-center gap-3"
+                            >
+                                {isSyncing ? "Importing..." : "Start Import"}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Right table panel */}
+                    <div className="lg:col-span-3 flex flex-col overflow-hidden bg-grid">
+                        <div className="p-8 md:p-12 border-b border-white/5 bg-black/40 backdrop-blur-3xl flex flex-col md:flex-row justify-between items-start md:items-end gap-6 md:gap-0">
+                            <div className="space-y-2">
+                                <h3 className="text-3xl md:text-4xl font-bold tracking-tighter text-white">Participants</h3>
+                                <p className="text-[10px] uppercase tracking-[0.4em] text-primary-dim font-bold">Synchronized Database State</p>
+                            </div>
+                            <div className="text-left md:text-right border-l border-white/10 md:pl-10 h-auto md:h-16 flex flex-col justify-end">
+                                <span className="text-4xl md:text-5xl font-bold text-white tracking-tighter leading-none">
+                                    {parsedData.length > 0 ? parsedData.length.toLocaleString() : (dbParticipants ? dbParticipants.length.toLocaleString() : 0)}
+                                </span>
+                                <span className="text-[10px] text-primary-dim font-bold mt-2 uppercase tracking-[0.2em] block">Total Records</span>
+                            </div>
+                        </div>
+
+                        {parsedData.length > 0 || dbParticipants.length > 0 ? (
+                            <div className="overflow-auto flex-1 custom-scrollbar">
+                                <div className="px-8 md:px-12 py-4 md:py-5 bg-black/60 border-b border-white/5 flex justify-between items-center sticky top-0 z-20 backdrop-blur-xl">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-accent flex items-center gap-3">
+                                        <div className="w-2 h-2 rounded-full bg-accent animate-pulse shadow-[0_0_10px_rgba(191,155,48,0.5)]" />
+                                        {parsedData.length > 0 ? "Staging Environment" : "Database"}
+                                    </span>
+                                    {parsedData.length > 0 && (
+                                        <button
+                                            onClick={() => { setCsvFile(null); setParsedData([]); }}
+                                            className="text-[9px] md:text-[10px] font-bold uppercase tracking-[0.2em] text-white/40 hover:text-error transition flex items-center gap-2 md:gap-3 border border-white/5 rounded-full px-4 md:px-5 py-2 bg-white/5 hover:bg-white/10"
+                                        >
+                                            <Trash2 className="w-3 h-3 md:w-3.5 md:h-3.5" /> <span className="hidden sm:inline">Clear Import</span>
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="min-w-full inline-block align-middle">
+                                    <table className="w-full text-left text-sm border-collapse">
+                                        <thead>
+                                            <tr className="border-b border-white/5 bg-white/[0.02]">
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px]">Team Lead</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden sm:table-cell">Member 1</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden sm:table-cell">Member 2</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden md:table-cell">Member 3</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden lg:table-cell">Member 4</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                             {(Array.isArray(parsedData) && parsedData.length > 0 ? parsedData : (Array.isArray(dbParticipants) ? dbParticipants : [])).slice(0, 100).map((row, i) => (
+                                                 <tr key={i} className="hover:bg-white/[0.03] transition-colors group">
+                                                    <td className="px-4 py-4 font-bold text-white group-hover:text-accent transition-colors text-xs">{row.team_lead_name || row['Team Lead Name'] || row.name || row.full_name || '-'}</td>
+                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden sm:table-cell">{row.team_member_1_name || row['Team Member 1 Name'] || row.email || '-'}</td>
+                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden sm:table-cell">{row.team_member_2_name || row['Team Member 2 Name'] || '-'}</td>
+                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden md:table-cell">{row.team_member_3_name || row['Team Member 3 Name'] || '-'}</td>
+                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden lg:table-cell">{row.team_member_4_name || row['Team Member 4 Name'] || '-'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex flex-col items-center justify-center space-y-10 group">
+                                <div className="w-24 h-24 rounded-3xl border border-white/5 bg-white/5 flex items-center justify-center transform group-hover:scale-110 transition-transform duration-700">
+                                    <FileSpreadsheet className="w-10 h-10 text-white/10 group-hover:text-white/30 transition-colors" />
+                                </div>
+                                <div className="text-center space-y-3">
+                                    <p className="text-xs uppercase tracking-[0.4em] font-bold text-white/40">No Participants Found</p>
+                                    <p className="text-[10px] uppercase tracking-widest text-white/10">Click upload above to import your participant list.</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'analytics' && (
+                <div className="flex-1 flex flex-col overflow-hidden bg-bg">
+                    <div className="p-8 md:p-12 border-b border-white/5 bg-black/40 backdrop-blur-3xl">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+                              {[
+                                { label: "Total Teams", value: Array.isArray(dbParticipants) ? dbParticipants.length : 0 },
+                                { label: "Estimated Participants", value: (Array.isArray(dbParticipants) ? dbParticipants.length : 0) * 6 },
+                                { label: "System Status", value: "Active" }
+                             ].map((stat, i) => (
+                                <div key={i} className="p-6 md:p-8 rounded-2xl md:rounded-3xl bg-white/5 border border-white/5 space-y-2">
+                                    <p className="text-[10px] font-bold uppercase tracking-widest text-primary-dim">{stat.label}</p>
+                                    <p className="text-3xl md:text-4xl font-bold tracking-tighter text-white">{stat.value.toLocaleString()}</p>
+                                </div>
+                             ))}
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-auto custom-scrollbar p-6 md:p-12">
+                         <div className="rounded-2xl md:rounded-3xl border border-white/5 overflow-hidden bg-black/20 overflow-x-auto">
+                            <table className="w-full text-left border-collapse min-w-[600px]">
+                                <thead>
+                                    <tr className="bg-white/5 border-b border-white/5">
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-widest text-primary-dim">Participant</th>
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-widest text-primary-dim text-center">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-white/5">
+                                    {(Array.isArray(dbParticipants) ? dbParticipants : []).map((p, i) => (
+                                        <tr key={i} className="hover:bg-white/5 transition-colors group">
+                                            <td className="p-6">
+                                                <div className="flex flex-col space-y-1">
+                                                    <span className="text-sm font-bold text-white tracking-tight">{p.team_lead_name || p['Team Lead Name'] || '-'} (Lead)</span>
+                                                    <span className="text-[10px] font-mono text-primary-dim">{p.team_member_1_name || p['Team Member 1 Name'] || '-'}</span>
+                                                    <span className="text-[10px] font-mono text-primary-dim">{p.team_member_2_name || p['Team Member 2 Name'] || '-'}</span>
+                                                </div>
+                                            </td>
+                                            <td className="p-6">
+                                                <div className="flex justify-center">
+                                                    <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest shadow-lg bg-green-500/20 text-green-400 border border-green-500/10`}>
+                                                        Registered
+                                                    </span>
+                                                </div>
+                                            </td>
+
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
