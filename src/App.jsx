@@ -88,7 +88,7 @@ function App() {
         </div>
 
         {/* Main Content */}
-        <main className="pt-24 pb-12 min-h-screen flex flex-col justify-center items-center relative">
+        <main className="pt-24 pb-20 min-h-screen flex flex-col justify-center items-center relative">
           {view === 'admin' && (
             <section className="w-full flex-1 animate-in fade-in duration-700" aria-label="Admin Dashboard">
               <AdminDesign />
@@ -101,6 +101,23 @@ function App() {
             </section>
           )}
         </main>
+
+        {/* Footer */}
+        <footer className="fixed bottom-0 w-full px-4 sm:px-6 md:px-12 py-3 sm:py-4 bg-bg/60 backdrop-blur-xl border-t border-white/5 z-40">
+          <div className="flex items-center justify-center gap-3">
+            <span className="text-xs sm:text-sm text-primary-dim">Made by</span>
+            <div className="flex items-center gap-2 group">
+              <img 
+                src="/devcatalyst-logo.png" 
+                alt="DevCatalyst" 
+                className="h-5 w-5 sm:h-6 sm:w-6 object-contain opacity-90 group-hover:opacity-100 transition-opacity"
+              />
+              <span className="font-semibold text-xs sm:text-sm text-white/90 group-hover:text-white transition-colors">
+                DevCatalyst
+              </span>
+            </div>
+          </div>
+        </footer>
       </div>
       </ErrorBoundary>
     </>
