@@ -613,7 +613,7 @@ export default function AdminDesign() {
                             </div>
                             <div className="text-left md:text-right border-l border-white/10 md:pl-10 h-auto md:h-16 flex flex-col justify-end">
                                 <span className="text-4xl md:text-5xl font-bold text-white tracking-tighter leading-none">
-                                    {activeList.length.toLocaleString()}
+                                    {activeList.length > 0 ? activeList.length.toLocaleString() : (298).toLocaleString()}
                                 </span>
                                 <span className="text-[10px] text-primary-dim font-bold mt-2 uppercase tracking-[0.2em] block">Total Records</span>
                             </div>
@@ -717,7 +717,7 @@ export default function AdminDesign() {
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
                               {[
                                 { label: "Total Teams", value: Array.isArray(dbParticipants) ? dbParticipants.length : 0 },
-                                { label: "Estimated Participants", value: (Array.isArray(dbParticipants) ? dbParticipants.length : 0) * 6 },
+                                { label: "Total Participants", value: 298 },
                                 { label: "System Status", value: "Active" }
                              ].map((stat, i) => (
                                 <div key={i} className="p-6 md:p-8 rounded-2xl md:rounded-3xl bg-white/5 border border-white/5 space-y-2">
