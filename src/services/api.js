@@ -1,7 +1,11 @@
 import axios from 'axios';
 
 // Get API URL from environment variable
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+let rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+if (rawApiUrl && !rawApiUrl.startsWith('http://') && !rawApiUrl.startsWith('https://')) {
+    rawApiUrl = `https://${rawApiUrl}`;
+}
+const API_URL = rawApiUrl.replace(/\/+$/, '');
 
 // Use the full backend URL (separate deployment)
 const resolvedBaseURL = API_URL;

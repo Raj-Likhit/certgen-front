@@ -189,7 +189,7 @@ export default function AdminDesign() {
         setIsLoadingDb(true);
         try {
             const scdRes = await api.get('/admin/aws-scd').catch(() => null);
-            if (scdRes?.data && scdRes.data.length > 0) {
+            if (Array.isArray(scdRes?.data) && scdRes.data.length > 0) {
                 setDbParticipants(scdRes.data.map(p => ({
                     name: p.Name,
                     email: p.Email,
@@ -197,8 +197,12 @@ export default function AdminDesign() {
                     team_member_1_name: p.Email
                 })));
             } else {
-                const res = await api.get('/admin/teams');
-                setDbParticipants(res.data || []);
+                const res = await api.get('/admin/teams').catch(() => null);
+                if (Array.isArray(res?.data)) {
+                    setDbParticipants(res.data);
+                } else {
+                    setDbParticipants([]);
+                }
             }
         } catch (err) {
             console.error("DB Fetch Error:", err);
