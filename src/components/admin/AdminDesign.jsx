@@ -95,6 +95,22 @@ export default function AdminDesign() {
     const [dbParticipants, setDbParticipants] = useState([])
     const [isSyncing, setIsSyncing] = useState(false)
     const [isLoadingDb, setIsLoadingDb] = useState(false)
+    const [participantSearch, setParticipantSearch] = useState('')
+    const [currentPage, setCurrentPage] = useState(1)
+    const pageSize = 50
+
+    const activeList = Array.isArray(parsedData) && parsedData.length > 0 ? parsedData : (Array.isArray(dbParticipants) ? dbParticipants : [])
+    const cleanSearch = participantSearch.trim().toLowerCase()
+    const filteredList = cleanSearch
+        ? activeList.filter(row => {
+            const n = String(row.name || row.Name || row.team_lead_name || row['Team Lead Name'] || '').toLowerCase()
+            const e = String(row.email || row.Email || row.team_member_1_name || row['Team Member 1 Name'] || '').toLowerCase()
+            return n.includes(cleanSearch) || e.includes(cleanSearch)
+        })
+        : activeList
+
+    const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize))
+    const paginatedList = filteredList.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
     useEffect(() => {
         // Initial token check (optional)
@@ -172,8 +188,18 @@ export default function AdminDesign() {
     const fetchParticipants = async () => {
         setIsLoadingDb(true);
         try {
-            const res = await api.get('/admin/teams')
-            setDbParticipants(res.data || [])
+            const scdRes = await api.get('/admin/aws-scd').catch(() => null);
+            if (scdRes?.data && scdRes.data.length > 0) {
+                setDbParticipants(scdRes.data.map(p => ({
+                    name: p.Name,
+                    email: p.Email,
+                    team_lead_name: p.Name,
+                    team_member_1_name: p.Email
+                })));
+            } else {
+                const res = await api.get('/admin/teams');
+                setDbParticipants(res.data || []);
+            }
         } catch (err) {
             console.error("DB Fetch Error:", err);
             if (err.status === 401) setAuth(false);
@@ -354,25 +380,53 @@ export default function AdminDesign() {
         if (!file) return
         setCsvFile(file)
         
-        // We will use Papa.parse to parse the multi-column dataset
         import('papaparse').then(Papa => {
             Papa.default.parse(file, {
                 header: true,
-                skipEmptyLines: true,
+                skipEmptyLines: 'greedy',
                 complete: (results) => {
-                    const data = results.data.map(row => {
-                        return {
-                            team_lead_name: row['Team Lead Name']?.trim() || row['Team Lead Name ']?.trim() || '',
-                            team_member_1_name: row['Team Member 1 Name']?.trim() || '',
-                            team_member_2_name: row['Team Member 2 Name']?.trim() || '',
-                            team_member_3_name: row['Team Member 3 Name']?.trim() || '',
-                            team_member_4_name: row['Team Member 4 Name']?.trim() || '',
-                            team_member_5_name: row['Team Member 5 Name']?.trim() || '',
+                    const rawRows = results.data || [];
+                    const data = rawRows.map(row => {
+                        // Normalize keys for case-insensitive and whitespace-tolerant lookup
+                        const lookup = {};
+                        Object.keys(row).forEach(k => {
+                            if (k) lookup[k.trim().toLowerCase()] = row[k]?.toString().trim() || '';
+                        });
+
+                        // 1. Flexible match for 2-column format (Name, Email / AWS SCD format)
+                        const indName = lookup['name'] || lookup['full name'] || lookup['participant name'] || lookup['student name'] || '';
+                        const indEmail = lookup['email'] || lookup['email address'] || lookup['mail'] || '';
+
+                        // 2. Flexible match for team format
+                        const teamLead = lookup['team lead name'] || lookup['team lead'] || lookup['lead name'] || '';
+                        const m1 = lookup['team member 1 name'] || lookup['team member 1'] || lookup['member 1'] || '';
+                        const m2 = lookup['team member 2 name'] || lookup['team member 2'] || lookup['member 2'] || '';
+                        const m3 = lookup['team member 3 name'] || lookup['team member 3'] || lookup['member 3'] || '';
+                        const m4 = lookup['team member 4 name'] || lookup['team member 4'] || lookup['member 4'] || '';
+                        const m5 = lookup['team member 5 name'] || lookup['team member 5'] || lookup['member 5'] || '';
+
+                        if (indName || indEmail) {
+                            return {
+                                name: indName,
+                                email: indEmail,
+                                team_lead_name: indName,
+                                team_member_1_name: indEmail,
+                            }
+                        } else if (teamLead || m1) {
+                            return {
+                                team_lead_name: teamLead,
+                                team_member_1_name: m1,
+                                team_member_2_name: m2,
+                                team_member_3_name: m3,
+                                team_member_4_name: m4,
+                                team_member_5_name: m5,
+                            }
                         }
-                    }).filter(t => t.team_lead_name || t.team_member_1_name) // Keep valid rows
+                        return null
+                    }).filter(Boolean)
 
                     setParsedData(data)
-                    toast.info(`Parsed ${data.length} team rows`)
+                    toast.info(`Parsed ${data.length} participant rows`)
                 },
                 error: (error) => {
                     toast.error(`CSV Parsing failed: ${error.message}`)
@@ -388,7 +442,7 @@ export default function AdminDesign() {
         if (!parsedData.length) return
         setIsSyncing(true)
         try {
-            const payload = { teams: parsedData }
+            const payload = { teams: parsedData, table_name: "AWS SCD" }
             const res = await api.post('/admin/batch-import', payload)
 
             // Check for row-level errors
@@ -559,19 +613,31 @@ export default function AdminDesign() {
                             </div>
                             <div className="text-left md:text-right border-l border-white/10 md:pl-10 h-auto md:h-16 flex flex-col justify-end">
                                 <span className="text-4xl md:text-5xl font-bold text-white tracking-tighter leading-none">
-                                    {parsedData.length > 0 ? parsedData.length.toLocaleString() : (dbParticipants ? dbParticipants.length.toLocaleString() : 0)}
+                                    {activeList.length.toLocaleString()}
                                 </span>
                                 <span className="text-[10px] text-primary-dim font-bold mt-2 uppercase tracking-[0.2em] block">Total Records</span>
                             </div>
                         </div>
 
-                        {parsedData.length > 0 || dbParticipants.length > 0 ? (
-                            <div className="overflow-auto flex-1 custom-scrollbar">
-                                <div className="px-8 md:px-12 py-4 md:py-5 bg-black/60 border-b border-white/5 flex justify-between items-center sticky top-0 z-20 backdrop-blur-xl">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-accent flex items-center gap-3">
-                                        <div className="w-2 h-2 rounded-full bg-accent animate-pulse shadow-[0_0_10px_rgba(191,155,48,0.5)]" />
-                                        {parsedData.length > 0 ? "Staging Environment" : "Database"}
-                                    </span>
+                        {activeList.length > 0 ? (
+                            <div className="flex flex-col flex-1 overflow-hidden">
+                                <div className="px-8 md:px-12 py-4 bg-black/60 border-b border-white/5 flex flex-wrap justify-between items-center gap-4 sticky top-0 z-20 backdrop-blur-xl">
+                                    <div className="flex items-center gap-4">
+                                        <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-accent flex items-center gap-3">
+                                            <div className="w-2 h-2 rounded-full bg-accent animate-pulse shadow-[0_0_10px_rgba(191,155,48,0.5)]" />
+                                            {parsedData.length > 0 ? "Staging Environment" : "Database"}
+                                        </span>
+                                        <input
+                                            type="text"
+                                            value={participantSearch}
+                                            onChange={(e) => {
+                                                setParticipantSearch(e.target.value)
+                                                setCurrentPage(1)
+                                            }}
+                                            placeholder="Search by name or email..."
+                                            className="px-4 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-accent/40 w-56 sm:w-64"
+                                        />
+                                    </div>
                                     {parsedData.length > 0 && (
                                         <button
                                             onClick={() => { setCsvFile(null); setParsedData([]); }}
@@ -581,22 +647,22 @@ export default function AdminDesign() {
                                         </button>
                                     )}
                                 </div>
-                                <div className="min-w-full inline-block align-middle">
+                                <div className="overflow-auto flex-1 custom-scrollbar min-w-full inline-block align-middle">
                                     <table className="w-full text-left text-sm border-collapse">
                                         <thead>
                                             <tr className="border-b border-white/5 bg-white/[0.02]">
-                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px]">Team Lead</th>
-                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden sm:table-cell">Member 1</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px]">Name / Lead</th>
+                                                <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden sm:table-cell">Email / Member 1</th>
                                                 <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden sm:table-cell">Member 2</th>
                                                 <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden md:table-cell">Member 3</th>
                                                 <th className="px-4 py-4 uppercase tracking-widest font-bold text-primary-dim text-[10px] hidden lg:table-cell">Member 4</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-white/5">
-                                             {(Array.isArray(parsedData) && parsedData.length > 0 ? parsedData : (Array.isArray(dbParticipants) ? dbParticipants : [])).slice(0, 100).map((row, i) => (
+                                             {paginatedList.map((row, i) => (
                                                  <tr key={i} className="hover:bg-white/[0.03] transition-colors group">
-                                                    <td className="px-4 py-4 font-bold text-white group-hover:text-accent transition-colors text-xs">{row.team_lead_name || row['Team Lead Name'] || row.name || row.full_name || '-'}</td>
-                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden sm:table-cell">{row.team_member_1_name || row['Team Member 1 Name'] || row.email || '-'}</td>
+                                                    <td className="px-4 py-4 font-bold text-white group-hover:text-accent transition-colors text-xs">{row.name || row.Name || row.team_lead_name || row['Team Lead Name'] || row.full_name || '-'}</td>
+                                                    <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden sm:table-cell">{row.email || row.Email || row.team_member_1_name || row['Team Member 1 Name'] || '-'}</td>
                                                     <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden sm:table-cell">{row.team_member_2_name || row['Team Member 2 Name'] || '-'}</td>
                                                     <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden md:table-cell">{row.team_member_3_name || row['Team Member 3 Name'] || '-'}</td>
                                                     <td className="px-4 py-4 text-zinc-400 font-medium text-xs hidden lg:table-cell">{row.team_member_4_name || row['Team Member 4 Name'] || '-'}</td>
@@ -604,6 +670,30 @@ export default function AdminDesign() {
                                             ))}
                                         </tbody>
                                     </table>
+                                </div>
+                                <div className="px-8 py-3.5 border-t border-white/5 bg-black/40 flex justify-between items-center text-xs text-primary-dim">
+                                    <span>
+                                        Showing {filteredList.length === 0 ? 0 : (currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredList.length)} of {filteredList.length.toLocaleString()} records
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                            disabled={currentPage === 1}
+                                            className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 text-xs font-semibold"
+                                        >
+                                            Previous
+                                        </button>
+                                        <span className="text-white font-mono px-2">
+                                            {currentPage} / {totalPages}
+                                        </span>
+                                        <button
+                                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                            disabled={currentPage === totalPages}
+                                            className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 text-xs font-semibold"
+                                        >
+                                            Next
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         ) : (
